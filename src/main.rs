@@ -30,6 +30,14 @@ pub enum Command {
     Deploy(DeployArgs),
 }
 
+// Enum to represent the type of vanity address search
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VanityType {
+    Prefix,
+    Suffix,
+    Both,
+}
+
 #[derive(Debug, Parser)]
 pub struct GrindArgs {
     /// The pubkey that will be the signer for the CreateAccountWithSeed instruction
@@ -42,7 +50,11 @@ pub struct GrindArgs {
 
     /// The target prefix for the pubkey
     #[clap(long)]
-    pub target: String,
+    pub prefix: Option<String>,
+
+    /// The target suffix for the pubkey
+    #[clap(long)]
+    pub suffix: Option<String>,
 
     /// Whether user cares about the case of the pubkey
     #[clap(long, default_value_t = false)]
@@ -213,7 +225,8 @@ pub fn deploy_with_max_program_len_with_seed(
 fn grind(mut args: GrindArgs) {
     maybe_update_num_cpus(&mut args.num_cpus);
 
-    let target = get_validated_target(&args);
+    // Determine vanity type and validate targets
+    let (vanity_type, prefix, suffix) = get_validated_targets(&args);
 
     // Initialize logger with optional logfile
     let mut logger = Logger::new();
@@ -227,10 +240,16 @@ fn grind(mut args: GrindArgs) {
     logger.timestamp_format("%Y-%m-%d %H:%M:%S");
     logger.level(Level::Info);
 
-    // Print resource usage
+    // Print resource usage and search type
     logfather::info!("using {} threads", args.num_cpus);
     #[cfg(feature = "gpu")]
     logfather::info!("using {} gpus", args.num_gpus);
+    
+    match vanity_type {
+        VanityType::Prefix => logfather::info!("searching for prefix: {}", prefix),
+        VanityType::Suffix => logfather::info!("searching for suffix: {}", suffix),
+        VanityType::Both => logfather::info!("searching for prefix: {} and suffix: {}", prefix, suffix),
+    }
 
     #[cfg(feature = "gpu")]
     let _gpu_threads: Vec<_> = (0..args.num_gpus)
@@ -251,9 +270,22 @@ fn grind(mut args: GrindArgs) {
                         // Generate new seed for this gpu & iteration
                         let seed = new_gpu_seed(gpu_index, iteration);
                         let timer = Instant::now();
+                        
+                        // Note: GPU implementation would need to be updated to support suffix and both
+                        // This is a placeholder - the actual GPU implementation would need significant changes
                         unsafe {
-                            vanity_round(gpu_index, seed.as_ref().as_ptr(), args.base.to_bytes().as_ptr(), args.owner.to_bytes().as_ptr(), target.as_ptr(), target.len() as u64, out.as_mut_ptr(), args.case_insensitive);
+                            vanity_round(
+                                gpu_index, 
+                                seed.as_ref().as_ptr(), 
+                                args.base.to_bytes().as_ptr(), 
+                                args.owner.to_bytes().as_ptr(), 
+                                prefix.as_ptr(), 
+                                prefix.len() as u64, 
+                                out.as_mut_ptr(), 
+                                args.case_insensitive
+                            );
                         }
+                        
                         let time_sec = timer.elapsed().as_secs_f64();
 
                         // Reconstruct solution
@@ -266,15 +298,23 @@ fn grind(mut args: GrindArgs) {
                         let out_str = fd_bs58::encode_32(reconstructed);
                         let out_str_target_check = maybe_bs58_aware_lowercase(&out_str, args.case_insensitive);
                         let count = u64::from_le_bytes(array::from_fn(|i| out[16 + i]));
+                        
+                        // Check if the address matches our criteria based on vanity type
+                        let is_match = match vanity_type {
+                            VanityType::Prefix => out_str_target_check.starts_with(prefix),
+                            VanityType::Suffix => out_str_target_check.ends_with(suffix),
+                            VanityType::Both => out_str_target_check.starts_with(prefix) && out_str_target_check.ends_with(suffix),
+                        };
+
                         logfather::info!(
                             "{}.. found in {:.3} seconds on gpu {gpu_index:>3}; {:>13} iters; {:>12} iters/sec",
-                            &out_str[..(target.len() + 4).min(40)],
+                            &out_str[..(prefix.len() + 4).min(40)],
                             time_sec,
                             count.to_formatted_string(&Locale::en),
                             ((count as f64 / time_sec) as u64).to_formatted_string(&Locale::en)
                         );
 
-                        if out_str_target_check.starts_with(target) {
+                        if is_match {
                             logfather::info!("out seed = {out:?} -> {}", core::str::from_utf8(&out[..16]).unwrap());
                             EXIT.store(true, Ordering::SeqCst);
                             logfather::trace!("gpu thread {gpu_index} exiting");
@@ -310,11 +350,26 @@ fn grind(mut args: GrindArgs) {
 
             count += 1;
 
+            // Check if the address matches our criteria based on vanity type
+            let is_match = match vanity_type {
+                VanityType::Prefix => out_str_target_check.starts_with(prefix),
+                VanityType::Suffix => out_str_target_check.ends_with(suffix),
+                VanityType::Both => out_str_target_check.starts_with(prefix) && out_str_target_check.ends_with(suffix),
+            };
+
             // Did cpu find target?
-            if out_str_target_check.starts_with(target) {
+            if is_match {
                 let time_secs = timer.elapsed().as_secs_f64();
+                
+                let match_description = match vanity_type {
+                    VanityType::Prefix => format!("prefix '{}'", prefix),
+                    VanityType::Suffix => format!("suffix '{}'", suffix),
+                    VanityType::Both => format!("prefix '{}' and suffix '{}'", prefix, suffix),
+                };
+                
                 logfather::info!(
-                    "cpu {i} found target: {pubkey}; {seed:?} -> {} in {:.3}s; {} attempts; {} attempts per second",
+                    "cpu {i} found target with {}: {pubkey}; {seed:?} -> {} in {:.3}s; {} attempts; {} attempts per second",
+                    match_description,
                     core::str::from_utf8(&seed).unwrap(),
                     time_secs,
                     count.to_formatted_string(&Locale::en),
@@ -328,26 +383,57 @@ fn grind(mut args: GrindArgs) {
     });
 }
 
-fn get_validated_target(args: &GrindArgs) -> &'static str {
+fn get_validated_targets(args: &GrindArgs) -> (VanityType, &'static str, &'static str) {
     // Static string of BS58 characters
     const BS58_CHARS: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-    // Validate target (i.e. does it include 0, O, I, l)
-    //
-    // maybe TODO: technically we could accept I or o if case-insensitivity but I suspect
-    // most users will provide lowercase targets for case-insensitive searches
-    for c in args.target.chars() {
-        assert!(
-            BS58_CHARS.contains(c),
-            "your target contains invalid bs58: {}",
-            c
-        );
-    }
+    // Determine vanity type based on provided arguments
+    let vanity_type = match (&args.prefix, &args.suffix) {
+        (Some(_), Some(_)) => VanityType::Both,
+        (Some(_), None) => VanityType::Prefix,
+        (None, Some(_)) => VanityType::Suffix,
+        (None, None) => {
+            panic!("Must specify at least one of --prefix or --suffix");
+        }
+    };
 
-    // bs58-aware lowercase converison
-    let target = maybe_bs58_aware_lowercase(&args.target, args.case_insensitive);
+    // Validate prefix if provided
+    let prefix = if let Some(ref prefix_str) = args.prefix {
+        // Validate target (i.e. does it include 0, O, I, l)
+        for c in prefix_str.chars() {
+            assert!(
+                BS58_CHARS.contains(c),
+                "your prefix contains invalid bs58 character: {}",
+                c
+            );
+        }
+        
+        // bs58-aware lowercase conversion
+        let prefix = maybe_bs58_aware_lowercase(prefix_str, args.case_insensitive);
+        prefix.leak()
+    } else {
+        "".leak()
+    };
 
-    target.leak()
+    // Validate suffix if provided
+    let suffix = if let Some(ref suffix_str) = args.suffix {
+        // Validate target (i.e. does it include 0, O, I, l)
+        for c in suffix_str.chars() {
+            assert!(
+                BS58_CHARS.contains(c),
+                "your suffix contains invalid bs58 character: {}",
+                c
+            );
+        }
+        
+        // bs58-aware lowercase conversion
+        let suffix = maybe_bs58_aware_lowercase(suffix_str, args.case_insensitive);
+        suffix.leak()
+    } else {
+        "".leak()
+    };
+
+    (vanity_type, prefix, suffix)
 }
 
 fn maybe_bs58_aware_lowercase(target: &str, case_insensitive: bool) -> String {
