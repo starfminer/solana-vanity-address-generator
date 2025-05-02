@@ -301,9 +301,9 @@ fn grind(mut args: GrindArgs) {
                         
                         // Check if the address matches our criteria based on vanity type
                         let is_match = match vanity_type {
-                            VanityType::Prefix => out_str_target_check.starts_with(prefix),
-                            VanityType::Suffix => out_str_target_check.ends_with(suffix),
-                            VanityType::Both => out_str_target_check.starts_with(prefix) && out_str_target_check.ends_with(suffix),
+                            VanityType::Prefix => out_str_target_check.starts_with(&prefix),
+                            VanityType::Suffix => out_str_target_check.ends_with(&suffix),
+                            VanityType::Both => out_str_target_check.starts_with(&prefix) && out_str_target_check.ends_with(&suffix),
                         };
 
                         logfather::info!(
@@ -352,9 +352,9 @@ fn grind(mut args: GrindArgs) {
 
             // Check if the address matches our criteria based on vanity type
             let is_match = match vanity_type {
-                VanityType::Prefix => out_str_target_check.starts_with(prefix),
-                VanityType::Suffix => out_str_target_check.ends_with(suffix),
-                VanityType::Both => out_str_target_check.starts_with(prefix) && out_str_target_check.ends_with(suffix),
+                VanityType::Prefix => out_str_target_check.starts_with(&prefix),
+                VanityType::Suffix => out_str_target_check.ends_with(&suffix),
+                VanityType::Both => out_str_target_check.starts_with(&prefix) && out_str_target_check.ends_with(&suffix),
             };
 
             // Did cpu find target?
@@ -383,7 +383,7 @@ fn grind(mut args: GrindArgs) {
     });
 }
 
-fn get_validated_targets(args: &GrindArgs) -> (VanityType, &'static str, &'static str) {
+fn get_validated_targets(args: &GrindArgs) -> (VanityType, String, String) {
     // Static string of BS58 characters
     const BS58_CHARS: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -409,10 +409,9 @@ fn get_validated_targets(args: &GrindArgs) -> (VanityType, &'static str, &'stati
         }
         
         // bs58-aware lowercase conversion
-        let prefix = maybe_bs58_aware_lowercase(prefix_str, args.case_insensitive);
-        prefix.leak()
+        maybe_bs58_aware_lowercase(prefix_str, args.case_insensitive)
     } else {
-        "".leak()
+        String::new()
     };
 
     // Validate suffix if provided
@@ -427,10 +426,9 @@ fn get_validated_targets(args: &GrindArgs) -> (VanityType, &'static str, &'stati
         }
         
         // bs58-aware lowercase conversion
-        let suffix = maybe_bs58_aware_lowercase(suffix_str, args.case_insensitive);
-        suffix.leak()
+        maybe_bs58_aware_lowercase(suffix_str, args.case_insensitive)
     } else {
-        "".leak()
+        String::new()
     };
 
     (vanity_type, prefix, suffix)
