@@ -1,6 +1,6 @@
 # `vanity`
 
-A *bLaZinGlY fAsT* tool for grinding vanity addresses on Solana - updated by StarfMiner to grind at the beginning and end of addresses.
+A *bLaZinGlY fAsT* tool for grinding vanity addresses on Solana - updated by StarfMiner to grind at the beginning (prefix) and end (suffix) of addresses.
 
 ## 1) What
 
